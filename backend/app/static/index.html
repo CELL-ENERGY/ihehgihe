@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Jan Nidhi Spotter — Citizen Ground Verification & XP</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+  <div class="app-container">
+
+    <!-- Navbar -->
+    <header class="navbar">
+      <a href="#" class="brand" onclick="showView('dashboard')">
+        <div class="brand-icon">🏛️</div>
+        <div>
+          <div class="brand-title">Jan Nidhi Spotter</div>
+          <div class="brand-subtitle">Ground Verification Network</div>
+        </div>
+      </a>
+
+      <nav class="nav-menu">
+        <button class="nav-btn active" id="nav-dashboard" onclick="showView('dashboard')">📊 Dashboard</button>
+        <button class="nav-btn" id="nav-submit" onclick="showView('submit')">📸 Verify Ground</button>
+        <button class="nav-btn" id="nav-submissions" onclick="showView('submissions')">📁 My Evidence</button>
+        <button class="nav-btn" id="nav-admin" onclick="showView('admin')">🛡️ Admin Portal</button>
+
+        <div class="user-nav-box" id="user-nav-box">
+          <span class="level-badge" id="nav-level-badge">Lvl 1</span>
+          <span class="xp-pill" id="nav-xp-pill">0 XP</span>
+          <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.85rem;" onclick="logout()">Logout</button>
+        </div>
+        <button class="btn btn-primary" id="btn-open-login" style="padding: 8px 18px; font-size: 0.85rem; display: none;" onclick="openAuthModal()">Login / Register</button>
+      </nav>
+    </header>
+
+    <!-- Global Toast / Alert -->
+    <div id="global-alert" class="error-banner"></div>
+
+    <!-- ================================================================ -->
+    <!-- VIEW 1: USER DASHBOARD -->
+    <!-- ================================================================ -->
+    <section id="view-dashboard" class="view-section">
+      <div class="dashboard-hero">
+        <div class="card" style="margin-bottom: 0;">
+          <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+            <div>
+              <div style="font-size: 0.85rem; color: var(--accent-emerald); font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;">Citizen Spotter Profile</div>
+              <h1 id="dash-user-name" style="font-size: 2rem; font-weight: 800; margin-top: 4px;">Citizen Explorer</h1>
+              <div id="dash-user-email" style="color: var(--text-secondary); font-size: 0.9rem;">citizen@jannidhi.gov.in</div>
+            </div>
+            <div style="text-align: right;">
+              <span class="level-badge" id="dash-level-large" style="font-size: 1rem; padding: 6px 16px;">Level 1</span>
+              <div style="font-size: 1.8rem; font-weight: 800; color: #f9fafb; margin-top: 8px;"><span id="dash-total-xp">0</span> <span style="font-size: 0.9rem; color: var(--accent-amber);">XP</span></div>
+            </div>
+          </div>
+
+          <!-- XP Progression -->
+          <div class="xp-progress-box">
+            <div class="progress-header">
+              <span>Next Level Progress</span>
+              <span id="dash-xp-progress-text">300 XP needed to Level 2</span>
+            </div>
+            <div class="progress-bar-bg">
+              <div class="progress-bar-fill" id="dash-progress-fill" style="width: 0%;"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Quick Submit Callout -->
+        <div class="card" style="margin-bottom: 0; background: linear-gradient(135deg, rgba(99, 102, 241, 0.15), rgba(16, 185, 129, 0.15)); display: flex; flex-direction: column; justify-content: center; text-align: center; border-color: rgba(16, 185, 129, 0.3);">
+          <div style="font-size: 2rem; margin-bottom: 8px;">📍</div>
+          <h3 style="font-size: 1.2rem; margin-bottom: 6px;">Spot Public Works</h3>
+          <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 16px;">Capture live ground evidence & earn <strong>+150 XP</strong> per verification!</p>
+          <button class="btn btn-primary" onclick="showView('submit')">Submit Ground Proof</button>
+        </div>
+      </div>
+
+      <!-- Stats Grid -->
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-number" id="dash-total-submissions" style="color: #60a5fa;">0</div>
+          <div class="stat-label">Total Submissions</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-number" id="dash-verified-submissions" style="color: var(--accent-emerald);">0</div>
+          <div class="stat-label">Verified Proofs</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-number" id="dash-pending-submissions" style="color: var(--accent-amber);">0</div>
+          <div class="stat-label">Pending Review</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-number" id="dash-unclaimed-xp" style="color: #ec4899;">0</div>
+          <div class="stat-label">Unclaimed Rewards</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================================ -->
+    <!-- VIEW 2: CITIZEN VERIFICATION FORM (ALL 6 MANDATORY FIELDS) -->
+    <!-- ================================================================ -->
+    <section id="view-submit" class="view-section" style="display: none;">
+      <div class="card" style="max-width: 800px; margin: 0 auto;">
+        <div class="form-header">
+          <h2>Submit Ground Verification</h2>
+          <p style="color: var(--text-secondary); font-size: 0.95rem; margin-top: 4px;">
+            Every field is mandatory. Photos and coordinates are verified against municipal registries.
+          </p>
+        </div>
+
+        <form id="verification-form" onsubmit="handleFormSubmit(event)">
+
+          <!-- 1. Citizen Handle / ID -->
+          <div class="form-group">
+            <label class="form-label">
+              1. Citizen Handle / ID <span class="req">*</span>
+            </label>
+            <input type="text" id="citizen_handle" class="form-input" placeholder="e.g. @citizen_rohit or Spotter_WB05" required>
+            <small style="color: var(--text-muted); font-size: 0.8rem; margin-top: 4px; display: block;">This identifier tags your public ground report.</small>
+          </div>
+
+          <!-- 2. Locality Name -->
+          <div class="form-group">
+            <label class="form-label">
+              2. Locality Name <span class="req">*</span>
+            </label>
+            <input type="text" id="locality_name" class="form-input" placeholder='e.g. "Salt Lake Sector V" or "Barasat Ward 12"' required>
+          </div>
+
+          <!-- 3. Structure Type -->
+          <div class="form-group">
+            <label class="form-label">
+              3. Structure Type <span class="req">*</span>
+            </label>
+            <select id="structure_type" class="form-select" required>
+              <option value="" disabled selected>-- Select Structure Type --</option>
+              <option value="Community Hall">Community Hall</option>
+              <option value="Shelter">Shelter</option>
+              <option value="Solar Street Light">Solar Street Light</option>
+              <option value="Public Water RO Plant">Public Water RO Plant</option>
+              <option value="Public Library / Study Center">Public Library / Study Center</option>
+              <option value="Drainage">Drainage</option>
+              <option value="Concrete Road">Concrete Road</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+
+          <!-- 4. Ground Observation -->
+          <div class="form-group">
+            <label class="form-label">
+              4. Ground Observation <span class="req">*</span>
+            </label>
+            <div class="radio-cards-grid">
+              <label class="radio-card" id="card-obs-completed" onclick="selectObservation('WORK_COMPLETED')">
+                <input type="radio" name="ground_observation" value="WORK_COMPLETED" required>
+                <div>
+                  <div style="font-weight: 700; font-size: 0.95rem;">Fully Built / Ready</div>
+                  <div style="font-size: 0.75rem; color: var(--text-secondary);">Structure is complete</div>
+                </div>
+              </label>
+              <label class="radio-card" id="card-obs-progress" onclick="selectObservation('WORK_IN_PROGRESS')">
+                <input type="radio" name="ground_observation" value="WORK_IN_PROGRESS" required>
+                <div>
+                  <div style="font-weight: 700; font-size: 0.95rem;">Work in Progress</div>
+                  <div style="font-size: 0.75rem; color: var(--text-secondary);">Construction ongoing</div>
+                </div>
+              </label>
+              <label class="radio-card" id="card-obs-nowork" onclick="selectObservation('NO_WORK_FOUND')">
+                <input type="radio" name="ground_observation" value="NO_WORK_FOUND" required>
+                <div>
+                  <div style="font-weight: 700; font-size: 0.95rem;">No Structure Found</div>
+                  <div style="font-size: 0.75rem; color: var(--text-secondary);">No work found at site</div>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <!-- 5. Location (Mandatory Geolocation) -->
+          <div class="form-group">
+            <label class="form-label">
+              5. Location <span class="req">*</span>
+            </label>
+            <div class="location-box">
+              <div class="location-info">
+                <div id="loc-status-text" class="location-badge-warning">Location required before submission</div>
+                <div id="loc-coords-display" style="font-size: 0.85rem; color: var(--text-secondary); font-family: monospace; display: none;">
+                  Latitude: <span id="display-lat"></span> | Longitude: <span id="display-lon"></span>
+                </div>
+              </div>
+              <button type="button" class="btn btn-secondary" onclick="captureLocation()">
+                📍 Use My Current Location
+              </button>
+            </div>
+            <input type="hidden" id="latitude">
+            <input type="hidden" id="longitude">
+          </div>
+
+          <!-- 6. Photo (Mandatory with Live Preview) -->
+          <div class="form-group">
+            <label class="form-label">
+              6. Upload Ground Photo <span class="req">*</span>
+            </label>
+            <div class="photo-upload-box" onclick="document.getElementById('proof_image').click()">
+              <input type="file" id="proof_image" accept="image/jpeg,image/png,image/webp" style="display: none;" onchange="handleFileSelected(event)">
+              <div id="photo-placeholder">
+                <div style="font-size: 2.2rem; margin-bottom: 8px;">📷</div>
+                <div style="font-weight: 600; color: #e5e7eb;">Click to browse or drop ground photo</div>
+                <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;">JPG, JPEG, PNG, WEBP (Max 10 MB)</div>
+              </div>
+              <div class="preview-container" id="preview-container" style="display: none;">
+                <img id="image-preview" class="preview-image" alt="Ground Preview">
+                <div style="margin-top: 8px; font-size: 0.85rem; color: var(--accent-emerald);" id="preview-filename"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Optional Work ID -->
+          <div class="form-group">
+            <label class="form-label" style="font-size: 0.85rem; color: var(--text-muted);">
+              Optional Work ID (if known)
+            </label>
+            <input type="text" id="work_id" class="form-input" placeholder="e.g. WB/2025/0553">
+          </div>
+
+          <!-- Submit Button -->
+          <div style="margin-top: 32px;">
+            <button type="submit" id="btn-submit-verification" class="btn btn-primary" style="width: 100%; padding: 16px; font-size: 1.1rem; font-weight: 700;">
+              SUBMIT VERIFICATION
+            </button>
+          </div>
+
+        </form>
+      </div>
+    </section>
+
+    <!-- ================================================================ -->
+    <!-- VIEW 3: SUCCESS SCREEN & DEFERRED XP FLOW (MANDATORY STEP) -->
+    <!-- ================================================================ -->
+    <section id="view-success" class="view-section" style="display: none;">
+      <div class="card success-screen">
+        <div class="success-icon">✓</div>
+        <h1 class="success-title">Verification Submitted Successfully!</h1>
+        <p class="success-subtitle">Your evidence has been recorded in the public ledger.</p>
+
+        <!-- Evidence Summary Card -->
+        <div class="evidence-preview-card">
+          <img id="success-evidence-img" class="evidence-thumb" src="" alt="Evidence">
+          <div class="evidence-meta">
+            <div><strong>Citizen ID:</strong> <span id="success-handle"></span></div>
+            <div><strong>Locality:</strong> <span id="success-locality"></span></div>
+            <div><strong>Structure:</strong> <span id="success-structure"></span></div>
+            <div><strong>Observation:</strong> <span id="success-obs"></span></div>
+            <div><strong>Coordinates:</strong> <span id="success-coords" style="font-family: monospace;"></span></div>
+            <div><strong>Status:</strong> <span class="status-badge status-pending">Pending Review</span></div>
+          </div>
+        </div>
+
+        <!-- Claim 150 XP Box -->
+        <div class="claim-reward-box">
+          <div style="font-size: 0.95rem; color: var(--text-secondary); margin-bottom: 12px; font-weight: 500;">
+            Claim your citizen reward for contributing verified ground evidence!
+          </div>
+          <button id="btn-claim-xp-main" class="btn btn-claim" onclick="claimXpForCurrent()">
+            ⭐ CLAIM 150 XP ⭐
+          </button>
+          <div id="claim-feedback" style="margin-top: 16px; font-weight: 700; color: var(--accent-emerald); display: none;"></div>
+        </div>
+
+        <div style="display: flex; gap: 16px; justify-content: center;">
+          <button class="btn btn-secondary" onclick="showView('dashboard')">Return to Dashboard</button>
+          <button class="btn btn-secondary" onclick="showView('submissions')">View My Evidence</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================================ -->
+    <!-- VIEW 4: MY SUBMISSIONS -->
+    <!-- ================================================================ -->
+    <section id="view-submissions" class="view-section" style="display: none;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
+        <div>
+          <h2 style="font-size: 1.6rem; font-weight: 800;">My Ground Submissions</h2>
+          <p style="color: var(--text-secondary); font-size: 0.9rem;">History of photographic evidence you contributed</p>
+        </div>
+        <button class="btn btn-primary" onclick="showView('submit')">+ New Verification</button>
+      </div>
+
+      <div class="submissions-grid" id="submissions-list">
+        <!-- Injected via JavaScript -->
+      </div>
+    </section>
+
+    <!-- ================================================================ -->
+    <!-- VIEW 5: ADMIN PORTAL -->
+    <!-- ================================================================ -->
+    <section id="view-admin" class="view-section" style="display: none;">
+      <div style="margin-bottom: 24px;">
+        <h2 style="font-size: 1.6rem; font-weight: 800;">Admin Verification Portal</h2>
+        <p style="color: var(--text-secondary); font-size: 0.9rem;">Review ground evidence submitted by citizens across all localities</p>
+      </div>
+
+      <div id="admin-submissions-list" style="display: flex; flex-direction: column; gap: 20px;">
+        <!-- Injected via JavaScript -->
+      </div>
+    </section>
+
+  </div>
+
+  <!-- ================================================================ -->
+  <!-- AUTH MODAL (LOGIN / REGISTER) -->
+  <!-- ================================================================ -->
+  <div id="auth-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+        <h3 id="auth-title" style="font-size: 1.3rem; font-weight: 700;">Citizen Login</h3>
+        <button onclick="closeAuthModal()" style="background: none; border: none; color: var(--text-muted); font-size: 1.5rem; cursor: pointer;">&times;</button>
+      </div>
+
+      <div style="display: flex; gap: 8px; margin-bottom: 20px; border-bottom: 1px solid var(--border-color); padding-bottom: 12px;">
+        <button class="btn btn-secondary active" id="tab-login" style="flex: 1; padding: 8px;" onclick="switchAuthTab('login')">Login</button>
+        <button class="btn btn-secondary" id="tab-register" style="flex: 1; padding: 8px;" onclick="switchAuthTab('register')">Register</button>
+      </div>
+
+      <div id="auth-error" class="error-banner" style="margin-bottom: 16px;"></div>
+
+      <!-- Login Form -->
+      <form id="form-login" onsubmit="handleLogin(event)">
+        <div class="form-group">
+          <label class="form-label">Email Address</label>
+          <input type="email" id="login-email" class="form-input" placeholder="citizen@example.com" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Password</label>
+          <input type="password" id="login-password" class="form-input" placeholder="••••••••" required>
+        </div>
+        <button type="submit" class="btn btn-primary" style="width: 100%; padding: 12px;">Log In</button>
+
+        <div style="text-align: center; margin-top: 16px;">
+          <button type="button" class="btn btn-secondary" style="width: 100%; font-size: 0.85rem;" onclick="quickDemoLogin()">⚡ Quick Demo Citizen Login</button>
+        </div>
+      </form>
+
+      <!-- Register Form -->
+      <form id="form-register" style="display: none;" onsubmit="handleRegister(event)">
+        <div class="form-group">
+          <label class="form-label">Full Name</label>
+          <input type="text" id="reg-name" class="form-input" placeholder="Citizen Name" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Email Address</label>
+          <input type="email" id="reg-email" class="form-input" placeholder="citizen@example.com" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Password</label>
+          <input type="password" id="reg-password" class="form-input" placeholder="At least 6 characters" minlength="6" required>
+        </div>
+        <button type="submit" class="btn btn-primary" style="width: 100%; padding: 12px;">Create Account</button>
+      </form>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
