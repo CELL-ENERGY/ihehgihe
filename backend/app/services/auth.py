@@ -5,7 +5,7 @@ Provides:
 - Secure password hashing with PBKDF2 HMAC SHA-256
 - JWT creation and validation
 - XP constants and level progression calculator
-- FastAPI dependency for extracting the authenticated User
+- FastAPI dependency for extracting the authenticated User from MongoDB
 """
 
 import hashlib
@@ -19,9 +19,8 @@ import jwt
 from dotenv import load_dotenv
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy.orm import Session
 
-from app.database.database import get_db
+from app.database.database import get_users_collection
 from app.models.verification import User
 
 load_dotenv()
@@ -31,7 +30,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 # Constants & Configuration
 # ---------------------------------------------------------------------------
 
-JWT_SECRET = os.getenv("JWT_SECRET", "jan-nidhi-spotter-secret-key-2026-secure")
+JWT_SECRET = os.getenv("JWT_SECRET") or os.getenv("JWT_SECRET_KEY", "jan-nidhi-spotter-secret-key-2026-secure")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 72
 
@@ -39,9 +38,6 @@ JWT_EXPIRATION_HOURS = 72
 XP_PER_VERIFICATION = 150
 
 # Level progression: 300 XP per level
-# Level 1: 0 - 299 XP
-# Level 2: 300 - 599 XP (e.g. 300 XP = Lvl 2, 450 XP = Lvl 2)
-# Level 3: 600 - 899 XP
 XP_PER_LEVEL = 300
 
 security = HTTPBearer(auto_error=False)
@@ -149,12 +145,11 @@ def calculate_level_progress(xp: int) -> dict:
 # FastAPI Dependency for Authenticated User
 # ---------------------------------------------------------------------------
 
-def get_current_user(
+async def get_current_user(
     creds: Optional[HTTPAuthorizationCredentials] = Depends(security),
-    db: Session = Depends(get_db),
 ) -> User:
     """
-    Extract and validate authenticated user from Bearer token.
+    Extract and validate authenticated user from Bearer token using MongoDB.
     Raises HTTP 401 if missing or invalid.
     """
     if not creds or not creds.credentials:
@@ -166,17 +161,18 @@ def get_current_user(
     payload = decode_access_token(creds.credentials)
     user_id = int(payload.get("sub", 0))
 
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
+    users_col = get_users_collection()
+    doc = await users_col.find_one({"id": user_id})
+    if not doc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User account no longer exists.",
         )
 
-    return user
+    return User.from_doc(doc)
 
 
-def get_admin_user(
+async def get_admin_user(
     current_user: User = Depends(get_current_user),
 ) -> User:
     """Validate that the authenticated user has admin privileges."""

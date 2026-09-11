@@ -1,19 +1,21 @@
 """
 Jan Nidhi Spotter Backend — Main Application
 
-Citizen verification and proof submission API for monitoring public works.
+Citizen verification and proof submission API for monitoring public works using MongoDB.
 Features:
 - Mandatory 6-field citizen verification with photo & GPS
 - Supabase Cloud Storage integration
-- Deferred XP gamification (+150 XP upon explicit claim)
-- Built-in interactive Web Portal for citizens and admins
+- Gamification (+150 XP upon admin verification)
+- Supports external Vercel frontend or built-in web portal
 
-Swagger UI: http://127.0.0.1:8001/docs
-Web Portal: http://127.0.0.1:8001/
+Swagger UI: http://127.0.0.1:8000/docs
+Health check: http://127.0.0.1:8000/health
 """
 
 import os
+from datetime import datetime, timezone
 from dotenv import load_dotenv
+
 load_dotenv()
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
@@ -22,9 +24,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.database.database import Base, engine
+from app.database.database import get_next_sequence, get_users_collection, init_db
 from app.routes.auth import router as auth_router
 from app.routes.verification import router as verification_router
+from app.services.auth import hash_password
 
 # ---------------------------------------------------------------------------
 # Create FastAPI application
@@ -35,15 +38,15 @@ app = FastAPI(
     description=(
         "Citizen verification and proof submission platform for monitoring "
         "public works. Citizens submit ground photographic proof with GPS coordinates, "
-        "and claim +150 XP to level up."
+        "and earn +150 XP when verified by admins."
     ),
-    version="2.0.0",
+    version="2.1.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
 
 # ---------------------------------------------------------------------------
-# CORS middleware
+# CORS middleware (allows Vercel, localhost, and custom domains)
 # ---------------------------------------------------------------------------
 
 cors_origins_env = os.getenv("CORS_ORIGINS", "")
@@ -79,10 +82,9 @@ app.include_router(auth_router)
 app.include_router(verification_router)
 
 # ---------------------------------------------------------------------------
-# Mount Static Files: Built React Frontend (frontend/dist) & Legacy Static
+# Mount Static Files (optional unified build fallback)
 # ---------------------------------------------------------------------------
 
-# Resolve frontend/dist directory
 possible_dist_dirs = [
     os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "dist")),
     os.path.abspath(os.path.join(os.getcwd(), "frontend", "dist")),
@@ -107,53 +109,55 @@ app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 
 # ---------------------------------------------------------------------------
-# Database table creation on startup
+# Database initialization & Admin Seeding on Startup
 # ---------------------------------------------------------------------------
 
 @app.on_event("startup")
-def on_startup():
-    """Create all database tables and seed default admin accounts on startup."""
-    Base.metadata.create_all(bind=engine)
-
-    from app.database.database import SessionLocal
-    from app.models.verification import User
-    from app.services.auth import hash_password
-
-    db = SessionLocal()
+async def on_startup():
+    """Initialize MongoDB collections, indexes, and seed default admin accounts."""
     try:
-        # Seed legacy admin account (username: admin, password: admin)
-        admin_user = db.query(User).filter(
-            (User.email == "admin") | (User.email == "admin@jannidhi.gov.in")
-        ).first()
-        if not admin_user:
-            admin_user = User(
-                email="admin",
-                name="System Admin",
-                hashed_password=hash_password("admin"),
-                xp=0,
-                level=1,
-                is_admin=True,
-            )
-            db.add(admin_user)
-            db.commit()
-            print("[SEED] Legacy admin seeded (username: admin / password: admin)")
+        await init_db()
+        users_col = get_users_collection()
+        now = datetime.now(timezone.utc)
 
-        # Seed localhost dev admin account (email: admin@gg, password: admin)
-        dev_admin = db.query(User).filter(User.email == "admin@gg").first()
+        # 1. Seed legacy admin account (username: admin, password: admin)
+        admin_user = await users_col.find_one({
+            "$or": [
+                {"email": "admin"},
+                {"email": "admin@jannidhi.gov.in"},
+            ]
+        })
+        if not admin_user:
+            admin_id = await get_next_sequence("user_id")
+            await users_col.insert_one({
+                "id": admin_id,
+                "email": "admin",
+                "name": "System Admin",
+                "hashed_password": hash_password("admin"),
+                "xp": 0,
+                "level": 1,
+                "is_admin": True,
+                "created_at": now,
+            })
+            print("[SEED] Legacy admin seeded into MongoDB (username: admin / password: admin)")
+
+        # 2. Seed localhost dev admin account (email: admin@gg, password: admin)
+        dev_admin = await users_col.find_one({"email": "admin@gg"})
         if not dev_admin:
-            dev_admin = User(
-                email="admin@gg",
-                name="Dev Admin",
-                hashed_password=hash_password("admin"),
-                xp=0,
-                level=1,
-                is_admin=True,
-            )
-            db.add(dev_admin)
-            db.commit()
-            print("[SEED] Dev admin seeded (email: admin@gg / password: admin)")
-    finally:
-        db.close()
+            dev_admin_id = await get_next_sequence("user_id")
+            await users_col.insert_one({
+                "id": dev_admin_id,
+                "email": "admin@gg",
+                "name": "Dev Admin",
+                "hashed_password": hash_password("admin"),
+                "xp": 0,
+                "level": 1,
+                "is_admin": True,
+                "created_at": now,
+            })
+            print("[SEED] Dev admin seeded into MongoDB (email: admin@gg / password: admin)")
+    except Exception as e:
+        print(f"[WARN] Startup database initialization warning: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +171,7 @@ def on_startup():
 )
 def health_check():
     """Health check endpoint."""
-    return {"status": "healthy", "service": "Jan Nidhi Spotter"}
+    return {"status": "healthy", "service": "Jan Nidhi Spotter (MongoDB)"}
 
 
 @app.get(
@@ -190,7 +194,8 @@ def root(request: Request):
 
     return {
         "status": "online",
-        "service": "Jan Nidhi Spotter Backend",
+        "service": "Jan Nidhi Spotter Backend (MongoDB)",
+        "docs": "/docs",
     }
 
 
@@ -202,12 +207,10 @@ def root(request: Request):
 def serve_spa(full_path: str):
     """Serve static files from frontend/dist or fallback to index.html for client-side routing."""
     if frontend_dist_dir:
-        # Check if direct file exists (e.g. favicon.ico, vite.svg)
         potential_file = os.path.join(frontend_dist_dir, full_path)
         if os.path.isfile(potential_file):
             return FileResponse(potential_file)
 
-        # Fallback to SPA index.html
         index_file = os.path.join(frontend_dist_dir, "index.html")
         if os.path.exists(index_file):
             return FileResponse(index_file)

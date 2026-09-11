@@ -1,5 +1,5 @@
 """
-API routes for citizen verification submissions.
+API routes for citizen verification submissions using MongoDB.
 
 Endpoints:
     POST   /verifications/                         - Submit citizen verification (all 6 fields mandatory)
@@ -24,15 +24,16 @@ from decimal import Decimal, InvalidOperation
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from sqlalchemy import func
-from sqlalchemy.orm import Session
 
-from app.database.database import get_db
-from app.models.verification import CitizenVerification, User
+from app.database.database import (
+    get_next_sequence,
+    get_users_collection,
+    get_verifications_collection,
+)
+from app.models.verification import User
 from app.schemas.verification import (
     AdminReviewUpdate,
     GroundObservation,
-    ReviewStatus,
     StatsResponse,
     StructureType,
     UserDashboardResponse,
@@ -56,15 +57,44 @@ router = APIRouter(
 )
 
 
-def _resolve_user(creds, db: Session) -> User:
+def _doc_to_verification_response(doc: dict) -> VerificationResponse:
+    """Helper to convert MongoDB document to VerificationResponse schema."""
+    return VerificationResponse(
+        id=doc["id"],
+        user_id=doc["user_id"],
+        work_id=doc.get("work_id"),
+        citizen_handle=doc.get("citizen_handle", ""),
+        locality_name=doc.get("locality_name", ""),
+        structure_type=doc.get("structure_type", ""),
+        ground_observation=doc.get("ground_observation", ""),
+        latitude=Decimal(str(doc.get("latitude", 0.0))),
+        longitude=Decimal(str(doc.get("longitude", 0.0))),
+        comment=doc.get("comment"),
+        citizen_name=doc.get("citizen_name"),
+        image_url=doc.get("image_url", ""),
+        review_status=doc.get("review_status", "Pending"),
+        xp_awarded=doc.get("xp_awarded", 0),
+        xp_claimed=doc.get("xp_claimed", False),
+        xp_claimed_at=doc.get("xp_claimed_at"),
+        xp_awarded_at=doc.get("xp_awarded_at"),
+        admin_comment=doc.get("admin_comment"),
+        reviewed_by=doc.get("reviewed_by"),
+        reviewed_at=doc.get("reviewed_at"),
+        created_at=doc.get("created_at") or datetime.now(timezone.utc),
+        updated_at=doc.get("updated_at") or datetime.now(timezone.utc),
+    )
+
+
+async def _resolve_user(creds) -> User:
     """Resolve authenticated user from Bearer token. Raises 401 if not authenticated."""
     if creds and creds.credentials:
         try:
             payload = decode_access_token(creds.credentials)
             user_id = int(payload.get("sub", 0))
-            user = db.query(User).filter(User.id == user_id).first()
-            if user:
-                return user
+            users_col = get_users_collection()
+            user_doc = await users_col.find_one({"id": user_id})
+            if user_doc:
+                return User.from_doc(user_doc)
         except Exception:
             pass
 
@@ -109,13 +139,11 @@ async def create_verification(
     citizen_name: Optional[str] = Form(None, description="Optional citizen name"),
     observation: Optional[str] = Form(None, description="Legacy observation field alias"),
     creds=Depends(security),
-    db: Session = Depends(get_db),
 ) -> VerificationCreateResponse:
-    """Validate mandatory fields, upload image, and record verification."""
+    """Validate mandatory fields, upload image, and record verification in MongoDB."""
 
     # --- 1. Validate Mandatory Citizen Handle ---
     if not citizen_handle or not citizen_handle.strip():
-        # Fallback to citizen_name or raise
         if citizen_name and citizen_name.strip():
             citizen_handle = citizen_name.strip()
         else:
@@ -188,7 +216,7 @@ async def create_verification(
         )
 
     # --- 7. Resolve Authenticated User ---
-    user = _resolve_user(creds, db)
+    user = await _resolve_user(creds)
 
     # --- 8. Upload Photo to Supabase Storage ---
     verification_uuid = uuid.uuid4().hex
@@ -197,47 +225,45 @@ async def create_verification(
         verification_uuid=verification_uuid,
     )
 
-    # --- 9. Save Verification in PostgreSQL (XP is NOT awarded here) ---
+    # --- 9. Save Verification in MongoDB ---
     clean_work_id = work_id.strip() if work_id else None
+    v_id = await get_next_sequence("verification_id")
+    now = datetime.now(timezone.utc)
 
-    new_ver = CitizenVerification(
-        user_id=user.id,
-        work_id=clean_work_id,
-        citizen_handle=citizen_handle,
-        locality_name=locality_name,
-        structure_type=structure_type,
-        ground_observation=obs_val,
-        observation=obs_val,
-        latitude=parsed_lat,
-        longitude=parsed_lon,
-        comment=comment,
-        citizen_name=citizen_name or citizen_handle,
-        image_url=image_url,
-        image_storage_path=f"proofs/{verification_uuid}",
-        review_status="PENDING",
-        xp_awarded=0,          # STRICT RULE: 0 awarded on submission
-        xp_claimed=False,      # STRICT RULE: Awarded only after admin approval
-        xp_claimed_at=None,
-        xp_awarded_at=None,
-        reviewed_by=None,
-        reviewed_at=None,
-    )
+    new_doc = {
+        "id": v_id,
+        "user_id": user.id,
+        "work_id": clean_work_id,
+        "citizen_handle": citizen_handle,
+        "locality_name": locality_name,
+        "structure_type": structure_type,
+        "ground_observation": obs_val,
+        "observation": obs_val,
+        "latitude": float(parsed_lat),
+        "longitude": float(parsed_lon),
+        "comment": comment,
+        "citizen_name": citizen_name or citizen_handle,
+        "image_url": image_url,
+        "image_storage_path": f"proofs/{verification_uuid}",
+        "review_status": "PENDING",
+        "xp_awarded": 0,
+        "xp_claimed": False,
+        "xp_claimed_at": None,
+        "xp_awarded_at": None,
+        "admin_comment": None,
+        "reviewed_by": None,
+        "reviewed_at": None,
+        "created_at": now,
+        "updated_at": now,
+    }
 
-    try:
-        db.add(new_ver)
-        db.commit()
-        db.refresh(new_ver)
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to save verification record: {str(e)}",
-        )
+    verifications_col = get_verifications_collection()
+    await verifications_col.insert_one(new_doc)
 
     return VerificationCreateResponse(
         status="success",
         message="Verification Submitted Successfully!",
-        verification_id=new_ver.id,
+        verification_id=v_id,
         image_url=image_url,
         review_status="PENDING",
         xp_awarded=0,
@@ -256,41 +282,25 @@ async def create_verification(
     summary="Get citizen dashboard stats & XP level",
     description="Returns current XP, level, progress to next level, and submission counts.",
 )
-def get_user_dashboard(
+async def get_user_dashboard(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ) -> UserDashboardResponse:
     """Return citizen dashboard metrics."""
-    # Compute counts
-    total = (
-        db.query(func.count(CitizenVerification.id))
-        .filter(CitizenVerification.user_id == current_user.id)
-        .scalar() or 0
-    )
-    verified = (
-        db.query(func.count(CitizenVerification.id))
-        .filter(
-            CitizenVerification.user_id == current_user.id,
-            func.upper(CitizenVerification.review_status) == "VERIFIED",
-        )
-        .scalar() or 0
-    )
-    pending = (
-        db.query(func.count(CitizenVerification.id))
-        .filter(
-            CitizenVerification.user_id == current_user.id,
-            func.upper(CitizenVerification.review_status) == "PENDING",
-        )
-        .scalar() or 0
-    )
-    rejected = (
-        db.query(func.count(CitizenVerification.id))
-        .filter(
-            CitizenVerification.user_id == current_user.id,
-            func.upper(CitizenVerification.review_status) == "REJECTED",
-        )
-        .scalar() or 0
-    )
+    verifications_col = get_verifications_collection()
+
+    total = await verifications_col.count_documents({"user_id": current_user.id})
+    verified = await verifications_col.count_documents({
+        "user_id": current_user.id,
+        "review_status": {"$regex": "^verified$", "$options": "i"},
+    })
+    pending = await verifications_col.count_documents({
+        "user_id": current_user.id,
+        "review_status": {"$regex": "^pending$", "$options": "i"},
+    })
+    rejected = await verifications_col.count_documents({
+        "user_id": current_user.id,
+        "review_status": {"$regex": "^rejected$", "$options": "i"},
+    })
 
     prog = calculate_level_progress(current_user.xp)
 
@@ -316,17 +326,14 @@ def get_user_dashboard(
     summary="Get current citizen submission history",
     description="Returns list of all ground verifications submitted by the logged-in citizen.",
 )
-def get_user_submissions(
+async def get_user_submissions(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ) -> List[VerificationResponse]:
     """List submissions for current user."""
-    return (
-        db.query(CitizenVerification)
-        .filter(CitizenVerification.user_id == current_user.id)
-        .order_by(CitizenVerification.created_at.desc())
-        .all()
-    )
+    verifications_col = get_verifications_collection()
+    cursor = verifications_col.find({"user_id": current_user.id}).sort("created_at", -1)
+    docs = await cursor.to_list(length=1000)
+    return [_doc_to_verification_response(d) for d in docs]
 
 
 # ---------------------------------------------------------------------------
@@ -338,44 +345,48 @@ def get_user_submissions(
     summary="Admin view of all citizen verifications",
     description="Returns all citizen verifications with registered user info and evidence for admin review.",
 )
-def get_admin_verifications(
+async def get_admin_verifications(
     admin: User = Depends(get_admin_user),
-    db: Session = Depends(get_db),
 ):
     """Admin view showing all verifications with associated user info."""
-    results = (
-        db.query(CitizenVerification, User)
-        .join(User, CitizenVerification.user_id == User.id)
-        .order_by(CitizenVerification.created_at.desc())
-        .all()
-    )
+    verifications_col = get_verifications_collection()
+    users_col = get_users_collection()
+
+    ver_docs = await verifications_col.find({}).sort("created_at", -1).to_list(length=1000)
+
+    # Pre-fetch users
+    user_ids = list({v.get("user_id") for v in ver_docs if v.get("user_id")})
+    users_cursor = users_col.find({"id": {"$in": user_ids}})
+    users_list = await users_cursor.to_list(length=len(user_ids) + 10)
+    user_map = {u["id"]: u for u in users_list}
 
     data = []
-    for ver, user in results:
+    for ver in ver_docs:
+        u = user_map.get(ver.get("user_id"), {})
         data.append({
-            "id": ver.id,
-            "citizen_handle": ver.citizen_handle,
-            "locality_name": ver.locality_name,
-            "structure_type": ver.structure_type,
-            "ground_observation": ver.ground_observation,
-            "latitude": float(ver.latitude),
-            "longitude": float(ver.longitude),
-            "image_url": ver.image_url,
-            "review_status": ver.review_status,
-            "admin_comment": ver.admin_comment,
-            "xp_awarded": ver.xp_awarded,
-            "xp_claimed": ver.xp_claimed,
-            "xp_claimed_at": ver.xp_claimed_at.isoformat() if ver.xp_claimed_at else None,
-            "xp_awarded_at": ver.xp_awarded_at.isoformat() if ver.xp_awarded_at else None,
-            "reviewed_by": ver.reviewed_by,
-            "reviewed_at": ver.reviewed_at.isoformat() if ver.reviewed_at else None,
-            "created_at": ver.created_at.isoformat(),
+            "id": ver["id"],
+            "citizen_handle": ver.get("citizen_handle", ""),
+            "locality_name": ver.get("locality_name", ""),
+            "structure_type": ver.get("structure_type", ""),
+            "ground_observation": ver.get("ground_observation", ""),
+            "latitude": float(ver.get("latitude", 0.0)),
+            "longitude": float(ver.get("longitude", 0.0)),
+            "image_url": ver.get("image_url", ""),
+            "review_status": ver.get("review_status", "Pending"),
+            "admin_comment": ver.get("admin_comment"),
+            "xp_awarded": ver.get("xp_awarded", 0),
+            "xp_claimed": ver.get("xp_claimed", False),
+            "xp_claimed_at": ver["xp_claimed_at"].isoformat() if ver.get("xp_claimed_at") else None,
+            "xp_awarded_at": ver["xp_awarded_at"].isoformat() if ver.get("xp_awarded_at") else None,
+            "reviewed_by": ver.get("reviewed_by"),
+            "reviewed_at": ver["reviewed_at"].isoformat() if ver.get("reviewed_at") else None,
+            "created_at": ver["created_at"].isoformat() if ver.get("created_at") else datetime.now(timezone.utc).isoformat(),
             "user": {
-                "id": user.id,
-                "name": user.name,
-                "email": user.email,
-                "xp": user.xp,
-                "level": user.level,
+                "id": u.get("id", ver.get("user_id")),
+                "name": u.get("name", "Unknown Citizen"),
+                "email": u.get("email", ""),
+                "xp": u.get("xp", 0),
+                "level": u.get("level", 1),
             },
         })
     return data
@@ -398,18 +409,16 @@ def get_admin_verifications(
     response_model=VerificationResponse,
     summary="Admin review decision alias",
 )
-def admin_review_verification(
+async def admin_review_verification(
     verification_id: int,
     payload: AdminReviewUpdate,
     admin: User = Depends(get_admin_user),
-    db: Session = Depends(get_db),
 ) -> VerificationResponse:
     """Admin approve/reject verification. Auto-awards XP on VERIFIED."""
-    ver = (
-        db.query(CitizenVerification)
-        .filter(CitizenVerification.id == verification_id)
-        .first()
-    )
+    verifications_col = get_verifications_collection()
+    users_col = get_users_collection()
+
+    ver = await verifications_col.find_one({"id": verification_id})
     if not ver:
         raise HTTPException(
             status_code=404,
@@ -439,33 +448,47 @@ def admin_review_verification(
         )
 
     now = datetime.now(timezone.utc)
+    xp_awarded = ver.get("xp_awarded", 0)
+    xp_claimed = ver.get("xp_claimed", False)
+    xp_claimed_at = ver.get("xp_claimed_at")
+    xp_awarded_at = ver.get("xp_awarded_at")
 
     # --- Auto-award 150 XP when status becomes VERIFIED with duplicate protection ---
     if normalized_status == "VERIFIED":
-        if not ver.xp_claimed and ver.xp_awarded == 0:
-            citizen = db.query(User).filter(User.id == ver.user_id).first()
+        if not xp_claimed and xp_awarded == 0:
+            citizen = await users_col.find_one({"id": ver["user_id"]})
             if citizen:
-                citizen.xp += XP_PER_VERIFICATION
-                citizen.level = calculate_level(citizen.xp)
+                new_xp = citizen.get("xp", 0) + XP_PER_VERIFICATION
+                new_level = calculate_level(new_xp)
+                await users_col.update_one(
+                    {"id": citizen["id"]},
+                    {"$set": {"xp": new_xp, "level": new_level}}
+                )
 
-            ver.xp_awarded = XP_PER_VERIFICATION
-            ver.xp_claimed = True                    # Prevents double-awarding
-            ver.xp_claimed_at = now
-            ver.xp_awarded_at = now
+            xp_awarded = XP_PER_VERIFICATION
+            xp_claimed = True
+            xp_claimed_at = now
+            xp_awarded_at = now
     elif normalized_status == "REJECTED":
-        if not ver.xp_claimed:
-            ver.xp_awarded = 0
+        if not xp_claimed:
+            xp_awarded = 0
 
-    # --- Record admin review metadata ---
-    ver.review_status = normalized_status
-    ver.reviewed_by = admin.id
-    ver.reviewed_at = now
+    update_fields = {
+        "review_status": normalized_status,
+        "reviewed_by": admin.id,
+        "reviewed_at": now,
+        "xp_awarded": xp_awarded,
+        "xp_claimed": xp_claimed,
+        "xp_claimed_at": xp_claimed_at,
+        "xp_awarded_at": xp_awarded_at,
+        "updated_at": now,
+    }
     if payload.admin_comment is not None:
-        ver.admin_comment = payload.admin_comment.strip()
+        update_fields["admin_comment"] = payload.admin_comment.strip()
 
-    db.commit()
-    db.refresh(ver)
-    return ver
+    await verifications_col.update_one({"id": verification_id}, {"$set": update_fields})
+    updated_ver = await verifications_col.find_one({"id": verification_id})
+    return _doc_to_verification_response(updated_ver)
 
 
 # ---------------------------------------------------------------------------
@@ -478,25 +501,27 @@ def admin_review_verification(
     summary="List citizen verifications",
     description="Returns citizen verification records. Supports optional filters.",
 )
-def list_verifications(
+async def list_verifications(
     work_id: Optional[str] = None,
     observation: Optional[str] = None,
     review_status: Optional[str] = None,
-    db: Session = Depends(get_db),
 ) -> List[VerificationResponse]:
     """List verifications with optional filters."""
-    query = db.query(CitizenVerification)
+    verifications_col = get_verifications_collection()
+    query = {}
     if work_id:
-        query = query.filter(CitizenVerification.work_id == work_id)
+        query["work_id"] = work_id
     if observation:
-        query = query.filter(
-            (CitizenVerification.ground_observation == observation)
-            | (CitizenVerification.observation == observation)
-        )
+        query["$or"] = [
+            {"ground_observation": observation},
+            {"observation": observation},
+        ]
     if review_status:
-        query = query.filter(CitizenVerification.review_status == review_status)
+        query["review_status"] = {"$regex": f"^{review_status}$", "$options": "i"}
 
-    return query.order_by(CitizenVerification.created_at.desc()).all()
+    cursor = verifications_col.find(query).sort("created_at", -1)
+    docs = await cursor.to_list(length=1000)
+    return [_doc_to_verification_response(d) for d in docs]
 
 
 @router.get(
@@ -505,54 +530,42 @@ def list_verifications(
     summary="Get verification statistics",
     description="Aggregated counts by review status and observation type.",
 )
-def get_stats(db: Session = Depends(get_db)) -> StatsResponse:
-    """Return aggregated stats using SQL queries."""
-    total = db.query(func.count(CitizenVerification.id)).scalar() or 0
-    pending = (
-        db.query(func.count(CitizenVerification.id))
-        .filter(CitizenVerification.review_status == "Pending")
-        .scalar() or 0
-    )
-    under_review = (
-        db.query(func.count(CitizenVerification.id))
-        .filter(CitizenVerification.review_status == "Under Review")
-        .scalar() or 0
-    )
-    verified = (
-        db.query(func.count(CitizenVerification.id))
-        .filter(CitizenVerification.review_status == "Verified")
-        .scalar() or 0
-    )
-    rejected = (
-        db.query(func.count(CitizenVerification.id))
-        .filter(CitizenVerification.review_status == "Rejected")
-        .scalar() or 0
-    )
+async def get_stats() -> StatsResponse:
+    """Return aggregated stats from MongoDB."""
+    verifications_col = get_verifications_collection()
 
-    no_work = (
-        db.query(func.count(CitizenVerification.id))
-        .filter(
-            (CitizenVerification.ground_observation == "NO_WORK_FOUND")
-            | (CitizenVerification.observation == "NO_WORK_FOUND")
-        )
-        .scalar() or 0
-    )
-    work_comp = (
-        db.query(func.count(CitizenVerification.id))
-        .filter(
-            (CitizenVerification.ground_observation == "WORK_COMPLETED")
-            | (CitizenVerification.observation == "WORK_COMPLETED")
-        )
-        .scalar() or 0
-    )
-    work_prog = (
-        db.query(func.count(CitizenVerification.id))
-        .filter(
-            (CitizenVerification.ground_observation == "WORK_IN_PROGRESS")
-            | (CitizenVerification.observation == "WORK_IN_PROGRESS")
-        )
-        .scalar() or 0
-    )
+    total = await verifications_col.count_documents({})
+    pending = await verifications_col.count_documents({
+        "review_status": {"$regex": "^pending$", "$options": "i"}
+    })
+    under_review = await verifications_col.count_documents({
+        "review_status": {"$regex": "^under[ _-]review$", "$options": "i"}
+    })
+    verified = await verifications_col.count_documents({
+        "review_status": {"$regex": "^verified$", "$options": "i"}
+    })
+    rejected = await verifications_col.count_documents({
+        "review_status": {"$regex": "^rejected$", "$options": "i"}
+    })
+
+    no_work = await verifications_col.count_documents({
+        "$or": [
+            {"ground_observation": "NO_WORK_FOUND"},
+            {"observation": "NO_WORK_FOUND"},
+        ]
+    })
+    work_comp = await verifications_col.count_documents({
+        "$or": [
+            {"ground_observation": "WORK_COMPLETED"},
+            {"observation": "WORK_COMPLETED"},
+        ]
+    })
+    work_prog = await verifications_col.count_documents({
+        "$or": [
+            {"ground_observation": "WORK_IN_PROGRESS"},
+            {"observation": "WORK_IN_PROGRESS"},
+        ]
+    })
 
     return StatsResponse(
         total=total,
@@ -571,22 +584,18 @@ def get_stats(db: Session = Depends(get_db)) -> StatsResponse:
     response_model=VerificationResponse,
     summary="Get verification by ID",
 )
-def get_verification(
+async def get_verification(
     verification_id: int,
-    db: Session = Depends(get_db),
 ) -> VerificationResponse:
     """Get single verification record."""
-    ver = (
-        db.query(CitizenVerification)
-        .filter(CitizenVerification.id == verification_id)
-        .first()
-    )
+    verifications_col = get_verifications_collection()
+    ver = await verifications_col.find_one({"id": verification_id})
     if not ver:
         raise HTTPException(
             status_code=404,
             detail=f"Verification with ID {verification_id} not found.",
         )
-    return ver
+    return _doc_to_verification_response(ver)
 
 
 @router.get(
@@ -594,17 +603,14 @@ def get_verification(
     response_model=List[VerificationResponse],
     summary="Get verifications by Work ID",
 )
-def get_verifications_by_work(
+async def get_verifications_by_work(
     work_id: str,
-    db: Session = Depends(get_db),
 ) -> List[VerificationResponse]:
     """Get all verifications matching work_id."""
-    return (
-        db.query(CitizenVerification)
-        .filter(CitizenVerification.work_id == work_id)
-        .order_by(CitizenVerification.created_at.desc())
-        .all()
-    )
+    verifications_col = get_verifications_collection()
+    cursor = verifications_col.find({"work_id": work_id}).sort("created_at", -1)
+    docs = await cursor.to_list(length=1000)
+    return [_doc_to_verification_response(d) for d in docs]
 
 
 @router.patch(
@@ -612,24 +618,24 @@ def get_verifications_by_work(
     response_model=VerificationResponse,
     summary="Update verification review status",
 )
-def update_verification_status(
+async def update_verification_status(
     verification_id: int,
     status_update: VerificationStatusUpdate,
-    db: Session = Depends(get_db),
 ) -> VerificationResponse:
     """Update review status."""
-    ver = (
-        db.query(CitizenVerification)
-        .filter(CitizenVerification.id == verification_id)
-        .first()
-    )
+    verifications_col = get_verifications_collection()
+    ver = await verifications_col.find_one({"id": verification_id})
     if not ver:
         raise HTTPException(
             status_code=404,
             detail=f"Verification with ID {verification_id} not found.",
         )
 
-    ver.review_status = status_update.review_status.value
-    db.commit()
-    db.refresh(ver)
-    return ver
+    new_status = status_update.review_status or status_update.status or "Pending"
+    now = datetime.now(timezone.utc)
+    await verifications_col.update_one(
+        {"id": verification_id},
+        {"$set": {"review_status": new_status, "updated_at": now}}
+    )
+    updated = await verifications_col.find_one({"id": verification_id})
+    return _doc_to_verification_response(updated)
