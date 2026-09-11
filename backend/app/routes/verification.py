@@ -3,6 +3,7 @@ API routes for citizen verification submissions using MongoDB.
 
 Endpoints:
     POST   /verifications/                         - Submit citizen verification (all 6 fields mandatory)
+    GET    /images/{file_id}                       - Retrieve proof image from MongoDB GridFS
     GET    /verifications/                         - List all verifications (supports filters)
     GET    /verifications/stats                    - Global verification statistics
     GET    /verifications/{id}                     - Single verification by ID
@@ -23,7 +24,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 
 from app.database.database import (
     get_next_sequence,
@@ -50,7 +51,7 @@ from app.services.auth import (
     get_current_user,
     security,
 )
-from app.services.storage import upload_image
+from app.services.storage import get_image_response, upload_image
 
 router = APIRouter(
     tags=["Citizen Verification"],
@@ -105,6 +106,20 @@ async def _resolve_user(creds) -> User:
 
 
 # ---------------------------------------------------------------------------
+# GET /images/{file_id} — Retrieve Proof Image from MongoDB GridFS
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/images/{file_id}",
+    summary="Retrieve proof image from MongoDB GridFS",
+    description="Serves uploaded citizen proof image directly from MongoDB GridFS.",
+)
+async def get_image(file_id: str):
+    """Retrieve and serve image from MongoDB GridFS by file_id."""
+    return await get_image_response(file_id)
+
+
+# ---------------------------------------------------------------------------
 # POST /verifications/ — Submit Citizen Verification (ALL 6 FIELDS MANDATORY)
 # ---------------------------------------------------------------------------
 
@@ -126,6 +141,7 @@ async def _resolve_user(creds) -> User:
     ),
 )
 async def create_verification(
+    request: Request,
     citizen_handle: str = Form(None, description="Citizen Handle / ID *"),
     locality_name: str = Form(None, description="Locality Name * (e.g. Salt Lake Sector V)"),
     structure_type: str = Form(None, description="Structure Type *"),
@@ -140,7 +156,7 @@ async def create_verification(
     observation: Optional[str] = Form(None, description="Legacy observation field alias"),
     creds=Depends(security),
 ) -> VerificationCreateResponse:
-    """Validate mandatory fields, upload image, and record verification in MongoDB."""
+    """Validate mandatory fields, upload image to MongoDB GridFS, and record verification."""
 
     # --- 1. Validate Mandatory Citizen Handle ---
     if not citizen_handle or not citizen_handle.strip():
@@ -218,11 +234,12 @@ async def create_verification(
     # --- 7. Resolve Authenticated User ---
     user = await _resolve_user(creds)
 
-    # --- 8. Upload Photo to Supabase Storage ---
+    # --- 8. Upload Photo to MongoDB GridFS Storage ---
     verification_uuid = uuid.uuid4().hex
     image_url = await upload_image(
         file=proof_image,
         verification_uuid=verification_uuid,
+        request=request,
     )
 
     # --- 9. Save Verification in MongoDB ---

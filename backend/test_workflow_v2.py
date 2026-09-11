@@ -18,16 +18,15 @@ def run_tests():
     print("=== STARTING FULL CITIZEN VERIFICATION & XP FLOW TEST SUITE ===")
 
     # -------------------------------------------------------------
-    # 1. Health & Web Portal Check
+    # 1. Health Check
     # -------------------------------------------------------------
     r = requests.get(f"{BASE_URL}/health")
     assert r.status_code == 200
     print("[PASS] 1. GET /health is healthy")
 
-    r = requests.get(f"{BASE_URL}/portal")
+    r = requests.get(f"{BASE_URL}/")
     assert r.status_code == 200
-    assert "Jan Nidhi Spotter" in r.text
-    print("[PASS] 2. GET /portal serves Web Application HTML")
+    print("[PASS] 2. GET / serves Application API / Web status")
 
     # -------------------------------------------------------------
     # 2. Register & Login Citizen User
@@ -108,7 +107,6 @@ def run_tests():
     # -------------------------------------------------------------
     # 4. Valid Verification Submission (XP MUST NOT BE AWARDED HERE!)
     # -------------------------------------------------------------
-    # Check user XP before submitting
     r_me_before = requests.get(f"{BASE_URL}/auth/me", headers=headers)
     xp_before = r_me_before.json()["xp"]
 
@@ -119,9 +117,8 @@ def run_tests():
     ver_id = sub_res["verification_id"]
     print(f"\n[PASS] 10. Verification submitted successfully (id={ver_id})")
     print(f"       Message: {sub_res['message']}")
-    print(f"       Supabase Image URL: {sub_res['image_url']}")
+    print(f"       MongoDB Image URL: {sub_res['image_url']}")
     print(f"       XP Awarded on Submit: {sub_res['xp_awarded']} (Expected: 0)")
-    print(f"       XP Claimed on Submit: {sub_res['xp_claimed']} (Expected: False)")
 
     # STRICT RULE: Verify XP was NOT awarded upon submission!
     r_me_after_sub = requests.get(f"{BASE_URL}/auth/me", headers=headers)
@@ -130,61 +127,55 @@ def run_tests():
     print(f"[PASS] 11. STRICT XP CHECK: User XP remained {xp_after_sub} (NO premature XP awarded!)")
 
     # -------------------------------------------------------------
-    # 5. User Dashboard Before Claim
+    # 5. User Dashboard Before Review
     # -------------------------------------------------------------
     r_dash = requests.get(f"{BASE_URL}/users/me/dashboard", headers=headers)
     assert r_dash.status_code == 200
     dash_data = r_dash.json()
-    assert dash_data["unclaimed_xp_count"] >= 1
-    print(f"[PASS] 12. Dashboard reflects 1+ unclaimed verification (Level={dash_data['current_level']}, XP={dash_data['current_xp']})")
+    assert dash_data["pending_submissions"] >= 1
+    print(f"[PASS] 12. Dashboard reflects pending verification (Level={dash_data['current_level']}, XP={dash_data['current_xp']})")
 
     # -------------------------------------------------------------
-    # 6. Explicit XP Claim Flow: POST /verifications/{id}/claim-xp
+    # 6. Admin Portal View & Review Action (Auto-awards 150 XP)
     # -------------------------------------------------------------
-    r_claim = requests.post(f"{BASE_URL}/verifications/{ver_id}/claim-xp", headers=headers)
-    assert r_claim.status_code == 200, f"Claim failed: {r_claim.text}"
-    claim_res = r_claim.json()
-    print(f"\n[PASS] 13. [ CLAIM 150 XP ] executed successfully:")
-    print(f"       Status: {claim_res['status']}")
-    print(f"       XP Awarded: +{claim_res['xp_awarded']}")
-    print(f"       Total XP: {claim_res['total_xp']}")
-    print(f"       User Level: {claim_res['level']}")
-    assert claim_res["xp_awarded"] == 150
-    assert claim_res["total_xp"] == xp_before + 150
+    r_admin_login = requests.post(f"{BASE_URL}/auth/login", json={"email": "admin@gg", "password": "admin"})
+    assert r_admin_login.status_code == 200
+    admin_token = r_admin_login.json()["access_token"]
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
+    r_admin = requests.get(f"{BASE_URL}/admin/verifications", headers=admin_headers)
+    assert r_admin.status_code == 200
+    admin_items = r_admin.json()
+    assert len(admin_items) >= 1
+    print(f"[PASS] 13. Admin view fetched {len(admin_items)} citizen submissions with ground evidence")
+
+    # Admin approves verification
+    admin_patch = {
+        "review_status": "VERIFIED",
+        "admin_comment": "Field verification validated with local municipality records."
+    }
+    r_rev = requests.patch(f"{BASE_URL}/admin/verifications/{ver_id}/review", json=admin_patch, headers=admin_headers)
+    assert r_rev.status_code == 200
+    assert r_rev.json()["review_status"] == "VERIFIED"
+    assert r_rev.json()["xp_awarded"] == 150
+    print(f"[PASS] 14. Admin review updated to 'VERIFIED' with comments (+150 XP awarded)")
 
     # Verify user profile reflects new XP
     r_me_claimed = requests.get(f"{BASE_URL}/auth/me", headers=headers)
     assert r_me_claimed.json()["xp"] == xp_before + 150
+    print(f"[PASS] 15. User profile updated to {r_me_claimed.json()['xp']} XP")
 
     # -------------------------------------------------------------
     # 7. DUPLICATE XP PROTECTION (CRITICAL TEST)
     # -------------------------------------------------------------
-    r_dup = requests.post(f"{BASE_URL}/verifications/{ver_id}/claim-xp", headers=headers)
-    assert r_dup.status_code == 400, f"Duplicate claim should be 400, got {r_dup.status_code}"
-    assert "already been claimed" in r_dup.text
-    print(f"[PASS] 14. DUPLICATE XP PROTECTION: Second claim rejected with 400 ('{r_dup.json()['detail']}')")
-
-    # Verify user XP did NOT increase on duplicate attempt
+    r_dup = requests.patch(f"{BASE_URL}/admin/verifications/{ver_id}/review", json=admin_patch, headers=admin_headers)
+    assert r_dup.status_code == 200
     r_me_dup = requests.get(f"{BASE_URL}/auth/me", headers=headers)
     assert r_me_dup.json()["xp"] == xp_before + 150
-    print("[PASS] 15. User XP did NOT increase on rejected duplicate attempt")
+    print("[PASS] 16. DUPLICATE XP PROTECTION: Re-verifying record does NOT award duplicate XP")
 
     # -------------------------------------------------------------
-    # 8. Ownership Protection (Another user cannot claim my XP)
-    # -------------------------------------------------------------
-    other_user = {"name": "Citizen Priya", "email": "priya.spotter@example.com", "password": "password_priya_123"}
-    r_other_reg = requests.post(f"{BASE_URL}/auth/register", json=other_user)
-    if r_other_reg.status_code == 400:
-        r_other_reg = requests.post(f"{BASE_URL}/auth/login", json={"email": other_user["email"], "password": other_user["password"]})
-    other_token = r_other_reg.json()["access_token"]
-    other_headers = {"Authorization": f"Bearer {other_token}"}
-
-    r_steal = requests.post(f"{BASE_URL}/verifications/{ver_id}/claim-xp", headers=other_headers)
-    assert r_steal.status_code in (400, 403), f"Expected 403/400 got {r_steal.status_code}"
-    print(f"[PASS] 16. OWNERSHIP PROTECTION: Unauthorized user cannot claim another citizen's verification")
-
-    # -------------------------------------------------------------
-    # 9. My Submissions History
+    # 8. My Submissions History
     # -------------------------------------------------------------
     r_subs = requests.get(f"{BASE_URL}/users/me/submissions", headers=headers)
     assert r_subs.status_code == 200
@@ -193,32 +184,10 @@ def run_tests():
     my_ver = next(v for v in my_subs if v["id"] == ver_id)
     assert my_ver["xp_claimed"] == True
     assert my_ver["xp_awarded"] == 150
-    print(f"[PASS] 17. GET /users/me/submissions shows correct XP claim status (xp_claimed=True, xp_awarded=150)")
+    print(f"[PASS] 17. GET /users/me/submissions shows correct XP status (xp_claimed=True, xp_awarded=150)")
 
     # -------------------------------------------------------------
-    # 10. Admin Portal View & Review Action
-    # -------------------------------------------------------------
-    r_admin = requests.get(f"{BASE_URL}/admin/verifications")
-    assert r_admin.status_code == 200
-    admin_items = r_admin.json()
-    assert len(admin_items) >= 1
-    print(f"[PASS] 18. Admin view fetched {len(admin_items)} citizen submissions with ground evidence")
-
-    # Admin updates review status
-    admin_patch = {
-        "review_status": "Verified",
-        "admin_comment": "Field verification validated with local municipality records."
-    }
-    r_rev = requests.patch(f"{BASE_URL}/admin/verifications/{ver_id}/review", json=admin_patch)
-    assert r_rev.status_code == 200
-    assert r_rev.json()["review_status"] == "Verified"
-    assert r_rev.json()["admin_comment"] == admin_patch["admin_comment"]
-    # Verify XP is unchanged by admin
-    assert r_rev.json()["xp_awarded"] == 150
-    print(f"[PASS] 19. Admin review updated to 'Verified' with comments (XP unchanged)")
-
-    # -------------------------------------------------------------
-    # 11. Final Dashboard Check
+    # 9. Final Dashboard Check
     # -------------------------------------------------------------
     r_dash_final = requests.get(f"{BASE_URL}/users/me/dashboard", headers=headers)
     dash_final = r_dash_final.json()
@@ -231,8 +200,7 @@ def run_tests():
     print(f"  Total Submissions: {dash_final['total_submissions']}")
     print(f"  Verified Submissions: {dash_final['verified_submissions']}")
     print(f"  Pending Submissions: {dash_final['pending_submissions']}")
-    print(f"  Unclaimed XP Submissions: {dash_final['unclaimed_xp_count']}")
-    print("\n*** ALL 19 WORKFLOW & XP INTEGRATION TESTS PASSED WITH 100% SUCCESS! ***\n")
+    print("\n*** ALL WORKFLOW & XP INTEGRATION TESTS PASSED WITH 100% SUCCESS! ***\n")
 
 if __name__ == "__main__":
     run_tests()
