@@ -4,7 +4,7 @@ Jan Nidhi Spotter Backend — Main Application
 Citizen verification and proof submission API for monitoring public works using MongoDB.
 Features:
 - Mandatory 6-field citizen verification with photo & GPS
-- Supabase Cloud Storage integration
+- MongoDB GridFS Storage integration
 - Gamification (+150 XP upon admin verification)
 - Supports external Vercel frontend or built-in web portal
 
